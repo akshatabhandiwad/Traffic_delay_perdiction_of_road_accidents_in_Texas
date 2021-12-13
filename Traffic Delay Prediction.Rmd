@@ -1,0 +1,1087 @@
+---
+fontsize: 12pt
+output: 
+  pdf_document:
+    latex_engine: xelatex
+header-includes:
+    - \usepackage[font={small,it}, labelfont={bf}]{caption}
+    - \usepackage{fancyhdr}
+    - \usepackage{lipsum}
+    - \pagestyle{fancy}
+    - \fancyhead[LO,RE]{}
+    - \fancyhead[R]{Traffic Delay Precdiction}
+    
+---
+
+
+```{r loadPackages, echo = FALSE, warning=FALSE, message=FALSE}
+
+if(!require("pacman")) install.packages("pacman")
+pacman::p_load(esquisse, forecast, tidyverse, gplots, GGally, gganimate, dplyr, tidyr, e1071, caTools, class, mlbench, BiocManager,
+               mosaic, scales, mosaic, mapproj, mlbench, data.table, datasets, rpartScore, MASS, caret, mapproj, purrr, kableExtra, magrittr,
+               nnet, rpart, rpart.plot, stratifyR, DMwR, RColorBrewer, randomForest, leaps, gains, rpartScore,
+               class, caTools, DMwR)
+```
+
+
+$~$
+
+
+```{r readData , echo = FALSE}
+## Load data set as a data table
+USacc <- data.table(fread("US_Accidents_June20.csv"))
+```
+
+$~$
+
+
+**Dataset Acknowledgments:**
+
+Moosavi, Sobhan, Mohammad Hossein Samavatian, Srinivasan Parthasarathy, and Rajiv Ramnath. “A Countrywide Traffic Accident Dataset.”, arXiv preprint arXiv:1906.05409 (2019).
+
+Moosavi, Sobhan, Mohammad Hossein Samavatian, Srinivasan Parthasarathy, Radu Teodorescu, and Rajiv Ramnath. “Accident Risk Prediction based on Heterogeneous Sparse Data: New Dataset and Insights.” In proceedings of the 27th ACM SIGSPATIAL International Conference on Advances in Geographic Information Systems, ACM, 2019
+
+
+$~$
+
+## Objective 
+
+This study focuses on two objective:
+
+1.	Perform Hypothesis testing on initial assumptions about the variables in the dataset
+
+2.	Build a predictive model using machine learning algorithms that can be used by TMC centers to effectively manage their resources 
+
+
+$~$
+
+
+
+# Data Preprocessing
+
+## Formatting
+
+```{r Time format, echo = FALSE, warning = FALSE, message = FALSE}
+
+## Setting Time 
+USacc$ST <- as.POSIXct(USacc$Start_Time, format = "%Y-%m-%d %H:%M:%S")
+USacc$ET <- as.POSIXct(USacc$End_Time, format = "%Y-%m-%d %H:%M:%S")
+USacc$Weather_Times <- as.POSIXct(USacc$Weather_Timestamp, format = "%Y-%m-%d %H:%M:%S")
+
+# Renaming Distance column
+names(USacc)[names(USacc)=="Distance(mi)"] <- "Distance"
+
+
+#Removing columns
+USacc <- USacc[,!c('Start_Time', 'End_Time', 'Weather_Timestamp', 'Country', 'Wind_Chill(F)', 'End_Lat', 'End_Lng', 'Civil_Twilight', 'Nautical_Twilight', 'Astronomical_Twilight')]
+
+```
+
+Since the data is collected for various sources, the data format is inconsistent. For the analysis, the date and time formats for Start_Time, End_Time and Weather_Timestamp have been standardized as ‘YYYY-MM-DD HH:mm:ss’. 
+
+
+## Adding a calculated field
+
+```{r cal fields, echo = FALSE, warning = FALSE, message = FALSE}
+
+# Duration in min 
+USacc$Traffic_Dur_min <- (as.numeric(USacc$ET) - as.numeric(USacc$ST))/60
+USacc <- USacc[USacc$Traffic_Dur_min > 0 & USacc$Traffic_Dur_min < 360,]
+
+# Adding Day of the week
+USacc$Day <- weekdays(as.Date(USacc$ST))
+
+```
+
+
+## Missing values
+
+
+```{r missing values, echo = FALSE, warning=FALSE}
+
+## NA summary
+missvaltotal <- data.frame(value = colSums(is.na(USacc)))
+#missvaltotal$names <- rownames(missvaltotal)
+missvaltotal$Proportion_Missing <- (missvaltotal$value/nrow(USacc)*100)
+
+missval.var <- missvaltotal[missvaltotal$value > 0, ]
+
+
+knitr::kable(missval.var,
+             caption = "Proportion of missing values in the data set",
+             digits = 2)
+
+```
+
+$~$
+
+```{r Missing values Texas, echo = FALSE, warning = FALSE, message = FALSE}
+
+### Since we will be considering only texas moving ahead, data manipulation is done only for texas.
+
+#Texas data
+Texas <- USacc %>%
+  filter(State == "TX") 
+
+
+## Adding Month
+Texas$Month <- month(Texas$ST)
+
+
+#Removing NA for Precipitation
+Filter1 <- Texas[!is.na(Texas$`Precipitation(in)`),]
+MonthAvgPrep <- Filter1 %>% group_by(Month) %>% summarise(AvgPrep = mean(`Precipitation(in)`))
+
+Texas <- merge(Texas,MonthAvgPrep)
+Texas$Precipitation <- Texas$`Precipitation(in)`
+
+Texas$AvgPrep[!is.na(Texas$Precipitation)] <- Texas$Precipitation[!is.na(Texas$Precipitation)]
+
+Texas$Precipitation <- Texas$AvgPrep
+Texas <- Texas[,-c("AvgPrep","Precipitation(in)")]
+
+
+
+#Removing NA for temperature
+Filter2 <- Texas[!is.na(Texas$`Temperature(F)`),]
+MonthAvgTemp <- Filter2 %>% group_by(Month) %>% summarise(AvgTemp = mean(`Temperature(F)`))
+
+Texas <- merge(Texas,MonthAvgTemp)
+Texas$Temperature <- Texas$`Temperature(F)`
+
+Texas$AvgTemp[!is.na(Texas$Temperature)] <- Texas$Temperature[!is.na(Texas$Temperature)]
+
+Texas$Temperature <- Texas$AvgTemp
+Texas <- Texas[,-c("AvgTemp","Temperature(F)")]
+
+
+
+#Removing NA for humidity
+Filter3 <- Texas[!is.na(Texas$`Humidity(%)`),]
+MonthAvgHum <- Filter3 %>% group_by(Month) %>% summarise(AvgHum = mean(`Humidity(%)`))
+
+Texas <- merge(Texas,MonthAvgHum)
+Texas$Humidity <- Texas$`Humidity(%)`
+
+Texas$AvgHum[!is.na(Texas$Humidity)] <- Texas$Humidity[!is.na(Texas$Humidity)]
+
+Texas$Humidity <- Texas$AvgHum
+Texas <- Texas[,-c("AvgHum","Humidity(%)")]
+
+
+
+#Removing NA for Pressure
+Filter4 <- Texas[!is.na(Texas$`Pressure(in)`),]
+MonthAvgPres <- Filter4 %>% group_by(Month) %>% summarise(AvgPres = mean(`Pressure(in)`))
+
+Texas <- merge(Texas,MonthAvgPres)
+Texas$Pressure <- Texas$`Pressure(in)`
+
+Texas$AvgPres[!is.na(Texas$Pressure)] <- Texas$Pressure[!is.na(Texas$Pressure)]
+
+Texas$Pressure <- Texas$AvgPres
+Texas <- Texas[,-c("AvgPres","Pressure(in)")]
+
+
+
+#Removing NA for WindSpeed
+Filter5 <- Texas[!is.na(Texas$`Wind_Speed(mph)`),]
+MonthAvgws <- Filter5 %>% group_by(Month) %>% summarise(Avgws = mean(`Wind_Speed(mph)`))
+
+Texas <- merge(Texas,MonthAvgws)
+Texas$WindSpeed <- Texas$`Wind_Speed(mph)`
+
+Texas$Avgws[!is.na(Texas$WindSpeed)] <- Texas$WindSpeed[!is.na(Texas$WindSpeed)]
+
+Texas$WindSpeed <- Texas$Avgws
+Texas <- Texas[,-c("Avgws","Wind_Speed(mph)")]
+
+
+
+
+#Removing NA for Visibility
+Filter6 <- Texas[!is.na(Texas$`Visibility(mi)`),]
+MonthAvgvis <- Filter6 %>% group_by(Month) %>% summarise(Avgvis = mean(`Visibility(mi)`))
+
+Texas <- merge(Texas,MonthAvgvis)
+Texas$Visibility <- Texas$`Visibility(mi)`
+
+Texas$Avgvis[!is.na(Texas$Visibility)] <- Texas$Visibility[!is.na(Texas$Visibility)]
+
+Texas$Visibility <- Texas$Avgvis
+Texas <- Texas[,-c("Avgvis","Visibility(mi)")]
+
+
+# Creating a new file for Texas records
+write.csv(Texas, file = "Texas_Final_data.csv")
+
+
+```
+
+
+## Duplicates and Outliers
+
+```{r Dropping texas, echo = FALSE, warning = FALSE, message = FALSE}
+
+texas <- fread("Texas_Final_data.csv")
+texas <- data.table(texas)
+
+#Removing columns
+texas <- texas[,!c('Start_Time', 'End_Time', 'Weather_Timestamp', 'Country', 'Wind_Chill(F)', 'End_Lat', 'End_Lng', 'Civil_Twilight', 'Nautical_Twilight', 'Astronomical_Twilight')]
+
+
+# duplicate records
+texas <- texas %>% distinct(Start_Lat,Start_Lng, Weather_Times, .keep_all= TRUE)
+
+
+# outlier records
+# Distance 
+texas <- texas[texas$Distance < 20,]
+
+#Precipitation
+texas <- texas[texas$Precipitation < 2.5,]
+
+#Temperature
+texas <- texas[texas$Temperature > 0 & texas$Temperature < 110,]
+
+#Pressure
+texas <- texas[texas$Pressure > 10 ,]
+
+#Windspeed
+texas <- texas[texas$WindSpeed < 120 ,]
+
+#Visibility
+texas <- texas[texas$Visibility > 0 & texas$Visibility < 15 ,]
+
+
+# Reformating texas
+texas$Day <- as.factor(texas$Day)
+texas$ST <- as.POSIXct(texas$ST, format = "%Y-%m-%d %H:%M:%S")
+texas$ET <- as.POSIXct(texas$ET, format = "%Y-%m-%d %H:%M:%S")
+
+```
+
+
+# Data Manipulation
+
+$~$
+
+```{r source pie chart, echo = FALSE, warning=FALSE, message= FALSE ,fig.height = 3.5, fig.cap = "*Sources of the accident report*"}
+
+# Extracting proportions
+Source_prop <- USacc %>%
+            group_by(Source) %>%
+            summarise(count = n()) %>%
+            mutate(Sourceprop = round(count / sum(count) * 100, 1)) %>%
+            arrange(desc(Source)) %>%
+            mutate(lab.ypos = cumsum(Sourceprop) - 0.5*Sourceprop)
+
+# colour scheme
+mycol <- c("#00009a","#44d3ff","#e1f8ff")
+
+# Donut chart
+ggplot(Source_prop, aes(x = 2, y = Sourceprop, fill = Source)) +
+  geom_bar(stat = "identity", color = "white") +
+  coord_polar(theta = "y", start = 0)+
+  geom_text(aes(y = lab.ypos, label = paste0(Sourceprop,'%')), color = "White")+
+  scale_fill_manual(values = mycol) +
+  theme_void()+
+  xlim(0.5, 2.5)
+
+
+```
+
+$~$
+
+
+```{r Severity souces , echo = FALSE, warning = FALSE, message = FALSE}
+
+Sev_Source <- USacc %>% 
+    group_by(Source, Severity) %>% 
+    summarise(value = round(mean(Traffic_Dur_min),2)) %>% 
+    spread(Severity, value)
+
+knitr::kable(Sev_Source,
+             caption = "Average duration of the accident impact on traffic(in minutes)- Source vs Traffic delay categorization",
+             digits = 2)
+```
+
+$~$
+
+```{r weather new, echo = FALSE, warning = FALSE, message= FALSE}
+
+WeatherCondition <- read.csv('UniqueWeatherConditions.csv')
+
+texas <- merge(texas, WeatherCondition, by.x = 'Weather_Condition', by.y = 'UniqueWeatherCondition', all.x = TRUE)
+
+texas$Weather_New[is.na(texas$Weather_New)] <- "Clear"
+
+# Converting into Factor
+texas$Weather_New <- as.factor(texas$Weather_New)
+
+#Removing source column
+texas <- texas[,!c('Weather_Condition')]
+
+```
+
+
+# Exploratory Data Analysis
+
+## State wise Statistics
+$~$
+
+```{r state stats, echo = FALSE, warning = FALSE, message= FALSE, fig.cap = "*State wide accident statistics*"}
+
+options(scipen = 999)
+
+df <- read.csv("StateData.csv")
+df$NAME <- toupper(df$NAME)
+
+map.df <- USacc %>% group_by(State) %>% summarise(Count = n())
+df <-  merge(df, map.df, by.x = "STUSPS", by.y="State")
+
+#Map
+states_map <- map_data("state")
+
+states_map$region <- toupper(states_map$region)
+states_map <- merge(states_map, df, by.x = "region", by.y = "NAME")
+
+# Create the map
+ggplot(states_map, aes(long, lat, group = group))+
+  geom_polygon(aes(fill = Count), color = "white")+
+  scale_fill_gradient(high = "#00009a",low = "#e1f8ff", breaks = c(200000, 600000), labels = c("200k", "600k")) +
+  theme( axis.title = element_blank(),
+                  axis.text = element_blank(),
+                  axis.ticks = element_blank(),
+                  axis.line = element_blank(),
+                  panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(),
+                panel.background = element_blank(),
+                legend.position = "top")
+
+
+```
+
+$~$
+
+
+```{r top city level, echo = FALSE, warning = FALSE, message= FALSE, fig.height = 3.5 , fig.cap = " *Number of accidents at City level* "}
+
+options(scipen = 999)
+
+City <- USacc %>% 
+    group_by(State , City) %>%
+    summarise(count = n()) %>%
+    arrange(desc(count)) %>%
+    head(n = 10) 
+
+City <- data.table(City)
+
+ggplot(City, aes(x = reorder(City, -count), y = count))+
+            geom_bar(stat='identity', fill = "#e1f8ff") +
+            geom_bar(data = subset(City, State == "TX"),fill = "#00009a", stat="identity")+
+            geom_text(aes(label = count), position = position_dodge(width=0.9), vjust=-0.25, size = 2) +
+            theme(axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+                  axis.text.y = element_blank(),
+                  axis.ticks.y = element_blank(),
+                  axis.line.y = element_blank(),
+                  axis.text.x = element_text(angle = 90),
+                panel.background = element_blank())
+ 
+
+```
+
+$~$
+
+
+## Texas Statistics
+
+```{r texas acc, echo = FALSE, warning = FALSE, message= FALSE, fig.cap= " *Accidents in Texas* ", fig.width= 5.5}
+
+options(scipen = 999)
+
+#Map
+states_map <- map_data("state")
+texas_map <- data.table(states_map[states_map$region == "texas",])
+
+texas_map$region <- toupper(texas_map$region)
+texas_map <- merge(texas_map, df, by.x = "region", by.y = "NAME")
+
+# Create the map
+ggplot(texas_map, aes(long, lat))+
+          geom_polygon(fill = "gray88") +
+          geom_point(data = texas, aes(x = Start_Lng, y = Start_Lat), color= "#00009a", size = 0.5, alpha=0.5)+
+          theme(axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+                  axis.text = element_blank(),
+                  axis.ticks = element_blank(),
+                  axis.line = element_blank(),
+                panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(),
+                panel.background = element_blank(),
+                legend.position = "right")
+
+
+```
+
+$~$
+
+
+```{r redefinind new traffic delay levels texas, echo = FALSE, warning = FALSE, message= FALSE}
+
+
+#Re-clasify traffic delay level
+texas$Delay_new <- as.integer(texas$Delay_new)
+texas$Delay_new <- 0
+
+texas$Delay_new[texas$Traffic_Dur_min <= 30] <- 1
+texas$Delay_new[texas$Traffic_Dur_min > 30 & texas$Traffic_Dur_min <= 45] <- 2
+texas$Delay_new[texas$Traffic_Dur_min > 45] <- 3
+
+
+texas$Delay_new <- as.factor(texas$Delay_new)
+
+# traffic delay level re-classification levels
+new_sev.lvl <- data.table()
+new_sev.lvl$`Traffic delay level` <- c("1","2","3")
+new_sev.lvl$`Time taken to clear traffic` <- c("Up to 30 min", "30 min – 45 min", "More than 45 min")
+
+knitr::kable(new_sev.lvl,
+             caption = "Traffic delay level re-classification")
+
+#Removing original columns
+texas <- texas[,!c('Source','Severity')]
+
+#write.csv(texas, file = "Texas_Final_Cleaned_data.csv")
+```
+
+$~$
+
+
+```{r texas acc with traffic delay levels, echo = FALSE, warning = FALSE, message= FALSE, fig.cap = "*Texas Road Accidents with traffic delay levels*"}
+
+
+# Create the map
+ggplot(texas_map, aes(long, lat))+
+  geom_polygon(fill = "gray88") +
+  geom_point(data = texas, aes(x = Start_Lng, y = Start_Lat, col = Delay_new),size = 0.5, alpha=0.5)+
+  scale_color_manual(values = c("#e1f8ff","#44d3ff","#00009a")) +
+  labs(color = "Traffic delay level")+
+  theme(axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+                  axis.text = element_blank(),
+                  axis.ticks = element_blank(),
+                  axis.line = element_blank(),
+                panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(),
+                panel.background = element_blank(),
+                legend.key = element_blank())
+
+
+```
+
+$~$
+
+
+```{r weather new texas, echo = FALSE, warning = FALSE, message= FALSE, fig.cap = " *Number of Accidents in various weather conditions* ", fig.height= 3}
+
+Weather_acc <- texas %>% 
+    group_by(Weather_New) %>%
+    summarise(count = n()) %>%
+    mutate(percent = round(count / sum(count)*100 ,2))
+
+Weather_acc <- data.table(Weather_acc)
+
+
+ggplot(Weather_acc, aes(x = Weather_New, y = count, fill = Weather_New)) +
+         geom_bar(stat = "identity") +
+            geom_text(aes(label = paste0(percent,"%")), position = position_dodge(width=0.9), vjust=-0.25, size = 2)+
+        scale_fill_brewer(palette = "Blues") +
+            theme(axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+                  axis.text.y = element_blank(),
+                  axis.ticks.y = element_blank(),
+                  axis.line.y = element_blank(),
+                  legend.position = "none",
+                  panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(),
+                panel.background = element_blank())
+
+
+```
+
+
+$~$
+
+```{r chi test weather v/s delay, echo = FALSE, warning = FALSE, message= FALSE}
+
+Chi_weather.severity <- table(texas$Weather_New,texas$Delay_new)
+
+Chi.Weather = chisq.test(Chi_weather.severity )
+Chi.Weather
+
+# expected
+Chi.Weather$expected
+
+#Observed
+Chi.Weather$observed
+
+
+```
+
+$~$
+
+```{r acc by hr, echo = FALSE, warning = FALSE, message= FALSE, fig.height = 3, fig.cap = "*Texas Road Accidents by time of day*"}
+
+texas$STHR <-  hour(texas$ST)
+
+# Severity1
+sev1 <- texas[ which(texas$Delay_new == 1), ]
+
+tod1 <- sev1 %>% 
+  group_by(STHR) %>% 
+  summarise(count = n()) %>% 
+  mutate(Prop = count/sum(count)*100)
+
+
+# Severity2
+sev2 <- texas[ which(texas$Delay_new == 2), ]
+
+tod2 <- sev2 %>% 
+  group_by(STHR) %>% 
+  summarise(count = n()) %>% 
+  mutate(Prop = count/sum(count)*100)
+
+
+# Severity3
+sev3 <- texas[ which(texas$Delay_new == 3), ]
+
+tod3 <- sev3 %>% 
+  group_by(STHR) %>% 
+  summarise(count = n()) %>% 
+  mutate(Prop = count/sum(count)*100)
+
+# merging all three
+tod <- merge(tod1, tod2, by = "STHR")
+tod <- merge(tod, tod3, by = "STHR")
+
+#creating the plot
+ggplot(tod, aes(x = STHR)) + 
+  geom_line(aes(y = Prop.x, color = "1")) +
+  geom_line(aes(y = Prop.y, color = "2")) +
+  geom_line(aes(y = Prop, color = "3"))+
+  scale_x_continuous(breaks = seq(min(tod1$STHR), max(tod1$STHR), by = 1)) + 
+  scale_color_manual(values = c("#c7f1ff","#44d3ff","#00009a")) +
+  xlab ("Time of Day") +
+  ylab ("Percentage share of the Accidents") +
+  ylim(0,15) +
+  labs(color = "Traffic delay level") +
+  theme(panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(),
+                panel.background = element_blank(),
+        legend.position = "top",
+        legend.key = element_blank())
+
+```
+
+
+$~$
+
+```{r acc by weekday, echo = FALSE, warning = FALSE, message= FALSE, fig.height= 3.2, fig.cap = " *Texas Road Accidents by Weekdays* "}
+
+texas$Day <- weekdays(as.Date(texas$ST))
+texas$Day <- factor(texas$Day, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
+Day_acc <- texas %>% 
+    group_by(Day, Delay_new) %>%
+    summarise(count = n()) %>%
+    mutate(percent = round(count / sum(count)*100 ,1))
+
+Day_acc <- data.table(Day_acc)
+
+
+ggplot(Day_acc, aes(x = Day, y = percent, fill = Delay_new)) +
+         geom_bar(stat = "identity", position = "dodge") +
+            geom_text(aes(label = paste0(percent,"%")), position = position_dodge(width=0.9), vjust=-0.25, size = 2) +
+        scale_fill_manual(values = c("#c7f1ff","#44d3ff","#00009a")) +
+        labs(fill = "Traffic delay level") +
+            theme(axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+                  axis.text.y = element_blank(),
+                  axis.ticks.y = element_blank(),
+                  axis.line.y = element_blank(),
+                  panel.grid.major = element_blank(), 
+                panel.grid.minor = element_blank(),
+                panel.background = element_blank(),
+                legend.position = "top")
+       
+```
+
+
+$~$
+
+
+```{r chi test day v/s delay, echo = FALSE, warning = FALSE, message= FALSE}
+
+Chi_day.severity <- table(texas$Day,texas$Delay_new)
+
+Chi.Day = chisq.test(Chi_day.severity )
+Chi.Day 
+
+# expected
+Chi.Day$expected
+
+#Observed
+Chi.Day$observed
+
+
+```
+
+$~$
+
+```{r acc by weekday vs weekend, echo = FALSE, warning = FALSE, message= FALSE, fig.height= 3, fig.width = 5, fig.cap = " *Texas Road Accidents on Weekday v/s weekend* "}
+
+texas$Weekend <- ifelse(texas$Day == "Saturday" | texas$Day == "Sunday", "Weekend", "Weekday")
+
+weekend_acc <- texas %>% 
+    group_by(Weekend, Delay_new) %>%
+    summarise(count = n()) 
+
+# adding Average count
+weekend_acc$avg.count <- ifelse(weekend_acc$Weekend == "Weekday", weekend_acc$count/5, weekend_acc$count/2)
+
+# total count
+weekday.sum <- sum(weekend_acc$count[weekend_acc$Weekend == "Weekday"])
+weekend.sum <- sum(weekend_acc$count[weekend_acc$Weekend == "Weekend"])
+
+# Percentage
+weekend_acc$percent <- ifelse(weekend_acc$Weekend == "Weekday", round(weekend_acc$avg.count/weekday.sum*100 , 1), round(weekend_acc$avg.count/weekend.sum*100 , 1))
+
+weekend_acc <- data.table(weekend_acc)
+
+ggplot(weekend_acc, aes(x = Weekend, y = percent, fill = Delay_new)) +
+         geom_bar(stat = "identity", position = "dodge") +
+            geom_text(aes(label = paste0(percent,"%")), position = position_dodge(width=0.9), vjust=-0.25, size = 2)+
+            scale_fill_manual(values = c("#c7f1ff","#44d3ff","#00009a")) +
+            labs(fill = "Traffic delay level") +
+            theme(axis.title.x = element_blank(),
+                  axis.title.y = element_blank(),
+                  axis.text.y = element_blank(),
+                  axis.ticks.y = element_blank(),
+                  axis.line.y = element_blank(),
+                  panel.grid.major = element_blank(), 
+                  panel.grid.minor = element_blank(),
+                  panel.background = element_blank())
+       
+```
+
+$~$
+
+```{r delay lvl 3 weekday and weekend, echo = FALSE, warning = FALSE, message= FALSE, fig.cap = " *Accidents by Day/Night* "}
+
+texas$Weekend <- as.factor(texas$Weekend)
+TableDelayWeekend <- table(texas$Delay_new,texas$Weekend)
+TableDelayWeekend
+
+prop.table(TableDelayWeekend)
+ 
+prop.test(TableDelayWeekend[3,2], n = (TableDelayWeekend[3,1] + TableDelayWeekend[3,2]) , p= 0.5, alternative = "two.sided", conf.level = 0.95, correct = FALSE)
+
+```
+
+
+# Empirical Analysis
+
+```{r train and test, echo = FALSE, warning = FALSE, message= FALSE}
+
+# making the logical vectors with 1 and 0 values
+texas[ ,19:31][ texas[ , 19:31 ] == TRUE ] <- 1
+texas[ ,19:31][ texas[ , 19:31 ] == FALSE ] <- 0
+
+texas[ ,19:31] <- lapply(texas[ ,19:31], factor)
+texas$Weekend <- as.factor(texas$Weekend)
+texas$Sunrise_Sunset <- as.factor(texas$Sunrise_Sunset)
+
+
+Predictors <- texas[,c("V1", "Start_Lat", "Start_Lng", "ST", "Bump", "Crossing", "Give_Way", "Junction",  
+                   "No_Exit" , "Railway" , "Roundabout" , "Station" , "Stop" , "Traffic_Calming" , "Traffic_Signal",
+                   "Sunrise_Sunset" , "Weather_New" , "Day" ,"Precipitation" , "Temperature" , "WindSpeed" ,
+                   "Humidity" , "Pressure" , "STHR" , "Weekend", "Delay_new")]
+
+
+set.seed(42)
+train.data <- Predictors %>% group_by(Delay_new) %>% sample_frac(0.8)
+test.data <- anti_join(Predictors, train.data, by = "V1")
+
+
+```
+
+$~$
+
+## Stepwise regression model
+
+```{r regsubset, echo = FALSE, warning = FALSE, message= FALSE}
+
+search <- regsubsets(Delay_new ~ ., data = train.data, nbest = 1, nvmax = dim(train.data)[2],
+                     method = "seqrep")
+
+reg.summary <- summary(search)
+
+```
+
+
+## Ordinal Multiclass Classification
+
+### Ordinal logistic regression
+
+```{r ordinal reg model, echo = FALSE, warning = FALSE, message= FALSE}
+
+# Training data
+polr.LR.ord <- polr(Delay_new ~ Start_Lat + Start_Lng + Crossing + Give_Way + Junction + Railway + Roundabout + Station + Stop + Traffic_Signal +
+                      Sunrise_Sunset + Precipitation + Temperature + WindSpeed + Humidity + Pressure + Weekend,
+                   data = train.data, Hess = T)
+
+summary(polr.LR.ord)
+
+# Test data
+polr.LR.ord.pred <- predict(polr.LR.ord, test.data, type = "class")
+
+# Confusion matrix
+confusionMatrix(polr.LR.ord.pred, test.data$Delay_new)
+
+```
+
+$~$
+
+### Ordinal logistic regression with SMOTE
+
+```{r train and test oversample, echo = FALSE, warning = FALSE, message= FALSE}
+
+train.data$Delay_new <- as.numeric(train.data$Delay_new)
+train.data <- as.data.table(train.data)
+
+# Only Taking Severity 2 and 3 for oversampling from the train dataset. 
+# We would use the test dataset for validation later
+texas_2_3 <- train.data[train.data$Delay_new > 1]
+
+texas_2_3$Delay_new <- factor(texas_2_3$Delay_new)
+
+# Taking only the required columns for oversampling to reduce run time
+texas_2_3_Var <- texas_2_3[,c('Delay_new','Start_Lat','Start_Lng', 'Bump', 'Crossing',
+                             'Give_Way', 'Traffic_Calming', 'Junction','Stop',
+                             'Traffic_Signal','Weekend', 'Sunrise_Sunset','Precipitation', 'Temperature','WindSpeed', 'Humidity','Pressure')]
+
+
+texas_1 <- train.data[train.data$Delay_new == 1]
+
+texas_1 <- texas_1[,c('Delay_new','Start_Lat','Start_Lng', 'Bump', 'Crossing',
+                             'Give_Way', 'Traffic_Calming', 'Junction','Stop',
+                             'Traffic_Signal','Weekend', 'Sunrise_Sunset','Precipitation', 'Temperature','WindSpeed', 'Humidity','Pressure')]
+
+texas_1$Delay_new <- factor(texas_1$Delay_new)
+
+
+split <- sample.split(texas_2_3_Var$Delay_new, SplitRatio = 0.75)
+
+# We can over-sample on Train data and the test data set can be used for validation later
+dresstrain <- subset(texas_2_3_Var, split == TRUE)
+dresstest <- subset(texas_2_3_Var, split == FALSE)
+
+as.data.frame(table(dresstrain$Delay_new))
+as.data.frame(table(dresstest$Delay_new))
+
+# Re Sampling, Creating balanced dataset
+##------ This would take 40-45 minutes to run ---------
+# balanced.data <- SMOTE(Delay_new ~., dresstrain, perc.over=300, perc.under=100, k=5, learner=NULL)
+# write.csv(balanced.data,'SMOTE_balanced_data.csv')
+
+balanced.data <- data.table(fread("SMOTE_balanced_data.csv"))
+balanced.data <- balanced.data[,-c("V1")]
+
+#combine the datasets
+texas_new <- rbind(texas_1, balanced.data, dresstest)
+
+# Severity 1,2 and 3 after Re-sampling 
+summary(texas_new$Delay_new)
+
+Table.dat <- data.frame("Delay Levels"= c("1","2", "3"),
+           "Before Over Sampling"= c(124759,45622,67112),
+           "After Over Sampling"= c(124759,119426,148270))
+
+knitr::kable(Table.dat,caption = " *Number of Observations before and after SMOTE* ", digits = 2)
+```
+
+$~$
+
+```{r ordinal reg model with oversample, echo = FALSE, warning = FALSE, message= FALSE}
+
+texas_new$Delay_new <- factor(texas_new$Delay_new)
+summary(texas_new$Delay_new)
+
+# Training data
+polr.LR.ord.resamp <- polr(Delay_new ~ Start_Lat + Start_Lng + Crossing + Give_Way + Junction + 
+                     Stop + Traffic_Signal + Sunrise_Sunset +
+                   Precipitation + Temperature + WindSpeed + Humidity + Pressure,
+                   data = texas_new, Hess = T)
+
+summary(polr.LR.ord)
+
+# Test data
+polr.LR.ord.resamp.pred <- predict(polr.LR.ord.resamp, test.data, type = "class")
+
+# Confusion matrix
+confusionMatrix(polr.LR.ord.resamp.pred, test.data$Delay_new)
+
+
+```
+
+$~$
+
+
+```{r Traffic_Dur_min hist, echo = FALSE, warning = FALSE, fig.height=3, message= FALSE, fig.cap= " *Distribution of traffic duration in minutes* "}
+
+ggplot(data=texas, aes(x = Traffic_Dur_min)) + 
+  geom_histogram(fill = "royalblue3") +
+  theme (panel.background = element_blank())
+  
+
+```
+
+$~$
+
+
+## Binary classificication
+
+
+```{r reclassifying delay levels with 45min split, echo = FALSE, warning = FALSE, message= FALSE}
+
+# reclassification of delay levels
+texas$Delay_new <- as.numeric(texas$Delay_new)
+texas$Delay_new[texas$Traffic_Dur_min <= 45] <- 1
+texas$Delay_new[texas$Traffic_Dur_min > 45] <- 2
+
+texas$Delay_new <- as.factor(texas$Delay_new)
+
+# training and test data
+Predictors1 <- texas[,c("V1", "Start_Lat", "Start_Lng", "ST", "Bump", "Crossing", "Give_Way", "Junction",  
+                   "No_Exit" , "Railway" , "Roundabout" , "Station" , "Stop" , "Traffic_Calming" , "Traffic_Signal",
+                   "Sunrise_Sunset" , "Day" , "Weather_New" , "Precipitation" , "Temperature" , "WindSpeed" ,
+                   "Humidity" , "Pressure" , "STHR" , "Weekend", "Delay_new")]
+
+
+set.seed(42)
+train.data <- Predictors1 %>% group_by(Delay_new) %>% sample_frac(0.8)
+test.data <- anti_join(Predictors1, train.data, by = "V1")
+
+train.data$Delay_new <- as.factor(train.data$Delay_new)
+test.data$Delay_new <- as.factor(test.data$Delay_new)
+
+```
+
+
+$~$
+
+```{r binary model with 45min split, echo = FALSE, warning = FALSE, message= FALSE}
+
+Lr <- glm(Delay_new ~ Start_Lat + Start_Lng + Crossing + Give_Way + Junction + Railway + Roundabout + Station + Stop
+          + Traffic_Signal + Sunrise_Sunset + Weather_New + Precipitation + Temperature + WindSpeed + Humidity +
+            Pressure + STHR + Weekend, data = train.data, family = "binomial")
+
+summary(Lr)
+
+Lr_pred <- predict(Lr, test.data, type = "response")
+
+#confusion matrix
+confusionMatrix(as.factor(ifelse(Lr_pred >= 0.5, 2, 1)), test.data$Delay_new, positive = "2")
+```
+
+$~$
+
+
+```{r binary model 0.25 threshold, echo = FALSE, warning = FALSE, message= FALSE}
+
+confusionMatrix(as.factor(ifelse(Lr_pred >= 0.25, 2, 1)), test.data$Delay_new, positive = "2")
+```
+
+$~$
+
+
+```{r lift chart for 45min split, echo = FALSE, warning = FALSE, message= FALSE, fig.width= 5, fig.height = 3.5, fig.cap= " *Lift chart with the logistic model* "}
+
+test.lvl <- as.numeric(levels(test.data$Delay_new))[test.data$Delay_new]
+
+gain <- gains(test.lvl, Lr_pred, groups = 10)
+
+# Plot Lift Chart
+plot(c(0,gain$cume.pct.of.total*sum(as.numeric(test.data$Delay_new))) ~ c(0,gain$cume.obs), 
+     xlab = "# cases", ylab = "Cumulative", 
+     col = "royalblue3",
+     type = "l")
+lines(c(0,sum(as.numeric(test.data$Delay_new)))~c(0, dim(test.data)[1]), col = "deepskyblue", lty = 5)
+
+```
+
+$~$
+
+```{r decile chart for 45min split, echo = FALSE, warning = FALSE, message= FALSE, fig.width = 5, fig.cap= " *Decile - Lift chart with the logistic model* "}
+
+### Decile chart
+heights <- gain$mean.resp/mean(as.numeric(test.data$Delay_new))
+midpoints <- barplot(heights, names.arg = gain$depth,  ylim = c(0,1.7), col = "royalblue3",  border = NA, 
+                     xlab = "Percentile", ylab = "Mean Response")
+
+```
+
+
+### Discriminant Analysis
+
+```{r LDA 45min split, echo = FALSE, warning = FALSE, message= FALSE}
+
+# Train data
+lda <- lda(Delay_new ~ Start_Lat + Start_Lng + Crossing + Give_Way + Junction + Railway + Roundabout + Station 
+               + Stop + Traffic_Signal + Sunrise_Sunset +  Weather_New + Precipitation + Temperature + WindSpeed +
+                 Humidity + Pressure + STHR + Weekend, data = train.data)
+
+# Test data
+lda_pred <- predict(lda, test.data)
+
+
+#confusion matrix
+confusionMatrix(lda_pred$class, test.data$Delay_new , positive = "2")
+
+```
+
+$~$
+
+```{r lda 0.25 threshold, echo = FALSE, warning = FALSE, message= FALSE}
+
+confusionMatrix(as.factor(ifelse(lda_pred$posterior[,2] >= 0.25, 2, 1)), test.data$Delay_new, positive = "2")
+
+```
+$~$
+
+```{r LDA plots train, echo = FALSE, warning = FALSE, message= FALSE,  fig.cap= " *LDA plots for train data* "}
+
+lda_pred.train <- predict(lda, train.data)
+
+ldahist(lda_pred.train$x[ ,1], g = train.data$Delay_new,
+        xlim = c(-7,7), ymax = 0.8, col = "royalblue3")
+
+```
+
+```{r LDA plots test, echo = FALSE, warning = FALSE, message= FALSE, fig.cap= " *LDA plots for test data* "}
+
+ldahist(lda_pred$x[ ,1], g = test.data$Delay_new,
+        xlim = c(-7,7), ymax = 0.8, col = "deepskyblue")
+
+```
+
+### Decision Tree
+
+```{r rpart with 45min split, echo = FALSE, warning = FALSE, message= FALSE}
+
+options(scipen = 999)
+
+control <- rpart.control(minbucket = 2000, cp = 0.007, maxsurrogate = 0, usesurrogate = 0, xval = 10)
+
+rpart <- rpart(Delay_new ~ Start_Lat + Start_Lng + Crossing + Give_Way + Junction + Railway + Roundabout + Station 
+               + Stop + Traffic_Signal + Sunrise_Sunset +  Weather_New + Precipitation + Temperature + WindSpeed +
+                 Humidity + Pressure + STHR + Weekend, data = train.data, method = "class",
+               control = control)
+
+tree <- prp(rpart, type = 1, extra = 1, under = TRUE, roundint = FALSE, 
+            split.font = 4, varlen = -10, box.palette = "BuOr")
+
+rpart.rules(rpart, cover = TRUE)
+
+
+model.pred.train <- predict(rpart,  data = train.data, 
+                            type = "class")
+
+
+# for Validation set
+model.pred.test <- predict(rpart, newdata = test.data, 
+                           type = "class")
+
+confusionMatrix(model.pred.test, as.factor(test.data$Delay_new), positive = "2")
+
+```
+
+### K-Nearest Neighbours (KNN)
+
+```{r KNN 45min split, echo = FALSE, warning = FALSE, message= FALSE}
+
+##extract 26th column of test dataset to measure the accuracy
+Delay_category_train <- train.data[,26,drop = T]
+Delay_category_test <- test.data[,26, drop = T]
+
+
+train_knn = train.data[,c('Delay_new','Start_Lat','Start_Lng','Crossing','Give_Way','Junction',
+                          'Railway','Roundabout','Station', 'Stop', 'Traffic_Signal', 'Sunrise_Sunset',
+                          'Precipitation','Pressure','Temperature','WindSpeed', 'Humidity', 'Weekend')]
+
+
+test_knn = test.data[,c('Delay_new','Start_Lat','Start_Lng','Crossing','Give_Way','Junction',
+                        'Railway','Roundabout','Station', 'Stop', 'Traffic_Signal', 'Sunrise_Sunset',
+                        'Precipitation','Pressure','Temperature' ,'WindSpeed', 'Humidity', 'Weekend')]
+
+
+train_knn <- as.data.frame(train_knn)
+test_knn <- as.data.frame(test_knn)
+
+# coverting factors into numeric for KNN
+train_knn$Sunrise_Sunset <- as.numeric(train_knn$Sunrise_Sunset)
+train_knn$Weekend <- as.numeric(train_knn$Weekend)
+
+test_knn$Sunrise_Sunset <- as.numeric(test_knn$Sunrise_Sunset)
+test_knn$Weekend <- as.numeric(test_knn$Weekend)
+
+
+# KNN model
+knn <- knn(train = train_knn, test = test_knn, cl=as.vector(Delay_category_train),
+           k=5, prob = T)
+
+# Confision matrix
+confusionMatrix(knn, Delay_category_test$Delay_new, positive = "2" )
+
+```
+
+### Random Forest
+
+
+```{r Random forest 45min split, echo = FALSE, warning = FALSE, message= FALSE}
+
+rf <- randomForest(Delay_new ~ Start_Lat + Start_Lng + Crossing + Give_Way + Junction + Railway + Roundabout +
+                     Station + Stop + Traffic_Signal + Sunrise_Sunset + Day + Weather_New + Precipitation +
+                     Temperature + WindSpeed + Humidity + Pressure + STHR + Weekend,
+                   data = train.data, mtry = 8, importance = T)
+
+# predict
+rf.test <- predict(rf, test.data)
+
+# confusion matrix
+confusionMatrix(rf.test, test.data$Delay_new, positive = "2")
+```
+
+
+# Conclusions
+
+
+```{r conclusion, echo = FALSE, warning = FALSE, message= FALSE}
+
+conclusion <- data.frame("Classifier"= c("Binary logistic regression","Discriminant Analysis","Decision Tree","K-Nearest Neighbors", "Random Forest"),
+           "Sensitivity"=c(0.76,0.74,0.79,0.72,0.69),
+           "Specificity"=c(0.60,0.63,0.65,0.96,0.89),
+           "Accuracy"= c("64.48%","66.26%","71.79%","89.77%","83.24%"))
+
+conclusion <- as.data.table(conclusion)
+
+knitr::kable(conclusion,
+             caption = "Summary of all the Algorithms")
+
+```
+
+
+
+
